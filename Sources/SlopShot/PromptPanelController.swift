@@ -1,4 +1,5 @@
 import AppKit
+import SlopShotCore
 
 enum SaveLocationSlot: Sendable {
   case primary
@@ -11,16 +12,24 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
   private let panel: PromptPanel
   private let textView = PromptTextView()
   private let scrollView = NSScrollView()
-  private let completion: (String?, SaveLocationSlot, @escaping () -> Void) -> Void
+  private let statusRow = NSView()
+  private let keywordStrip = KeywordChipStripView()
+  private let countdownLabel = NSTextField(labelWithString: "")
+  private let savingView = NSStackView()
+  private let savingIndicator = NSProgressIndicator()
+  private let completion: (String?, [String], SaveLocationSlot, @escaping () -> Void) -> Void
   private let dismissalDelay: TimeInterval
+  private let showsCountdown: Bool
   private let dragFiles: () -> [URL]
   private let onDragged: () -> Void
   private var timer: Timer?
   private var dismissalDeadline: Date?
-  private var hasInteracted = false
+  private var autoSaveState = PromptAutoSaveState()
   private var hasCompleted = false
   private var previewHeight: CGFloat = 0
   private var panelWidth: CGFloat = 0
+  private var keywordState: PromptKeywordSelectionState
+  private var visibleKeywordCount = 0
 
   private let minimumInputHeight: CGFloat = 58
   private let maximumInputHeight: CGFloat = 200
@@ -30,13 +39,17 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
     imageURLs: [URL],
     savePlaceholder: String,
     dismissalDelay: TimeInterval = 5,
+    showsCountdown: Bool = true,
+    keywordValues: String = "",
     dragFiles: @escaping () -> [URL] = { [] },
     onDragged: @escaping () -> Void = {},
-    completion: @escaping (String?, SaveLocationSlot, @escaping () -> Void) -> Void
+    completion: @escaping (String?, [String], SaveLocationSlot, @escaping () -> Void) -> Void
   ) {
     self.id = id
     self.completion = completion
     self.dismissalDelay = dismissalDelay
+    self.showsCountdown = showsCountdown
+    keywordState = PromptKeywordSelectionState(commaSeparatedValues: keywordValues)
     self.dragFiles = dragFiles
     self.onDragged = onDragged
     panel = PromptPanel(
@@ -47,6 +60,7 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
     )
     super.init()
     textView.focusedPlaceholder = savePlaceholder
+    textView.unfocusedPlaceholder = autoSaveState.composerPlaceholder
     configurePanel(imageURLs: imageURLs)
   }
 
@@ -119,6 +133,9 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
       self?.pauseTimer()
       return self?.dragFiles() ?? []
     }
+    preview.onMouseDown = { [weak self] in
+      self?.autoSaveState.registerPointerDown(on: .image)
+    }
     preview.onDraggingStarted = { [weak self] in self?.finishDragging() }
     preview.wantsLayer = true
     preview.layer?.backgroundColor = NSColor.clear.cgColor
@@ -148,7 +165,25 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
       "Return saves to Location 1. Command-Return saves to Location 2. Shift-Return adds a line."
     textView.onInteraction = { [weak self] in self?.pauseTimer() }
     textView.onCommit = { [weak self] slot in self?.finishWithCurrentText(slot: slot) }
-    textView.onCancel = { [weak self] in self?.finish(prompt: nil, slot: .primary) }
+    textView.onCancel = { [weak self] in self?.finish(prompt: nil, keywords: [], slot: .primary) }
+
+    keywordStrip.translatesAutoresizingMaskIntoConstraints = false
+    keywordStrip.onRemove = { [weak self] keyword in
+      self?.keywordState.suppress(keyword)
+      self?.updateKeywordChips()
+      self?.resizeEditorToFit()
+    }
+
+    statusRow.translatesAutoresizingMaskIntoConstraints = false
+    countdownLabel.translatesAutoresizingMaskIntoConstraints = false
+    countdownLabel.font = .systemFont(ofSize: 11)
+    countdownLabel.textColor = .secondaryLabelColor
+    countdownLabel.alignment = .right
+    countdownLabel.lineBreakMode = .byClipping
+    countdownLabel.setContentHuggingPriority(.required, for: .horizontal)
+    countdownLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+    statusRow.addSubview(keywordStrip)
+    statusRow.addSubview(countdownLabel)
 
     scrollView.translatesAutoresizingMaskIntoConstraints = false
     scrollView.documentView = textView
@@ -169,9 +204,25 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
     inputSurface.layer?.shadowRadius = 8
     inputSurface.layer?.shadowOffset = NSSize(width: 0, height: -2)
 
+    savingIndicator.style = .spinning
+    savingIndicator.controlSize = .small
+    savingIndicator.isIndeterminate = true
+    let savingLabel = NSTextField(labelWithString: "Saving…")
+    savingLabel.font = .systemFont(ofSize: 13)
+    savingLabel.textColor = .secondaryLabelColor
+    savingView.translatesAutoresizingMaskIntoConstraints = false
+    savingView.orientation = .horizontal
+    savingView.alignment = .centerY
+    savingView.spacing = 7
+    savingView.addArrangedSubview(savingIndicator)
+    savingView.addArrangedSubview(savingLabel)
+    savingView.isHidden = true
+
     surface.addSubview(preview)
+    surface.addSubview(statusRow)
     surface.addSubview(inputSurface)
     inputSurface.addSubview(scrollView)
+    inputSurface.addSubview(savingView)
 
     let bitmap = previewImage?.representations.compactMap { $0 as? NSBitmapImageRep }.first
     let sourceWidth = max(1, CGFloat(bitmap?.pixelsWide ?? Int(previewImage?.size.width ?? 16)))
@@ -181,7 +232,14 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
     previewHeight = ceil(sourceHeight * scale)
     let width = max(180, displayedWidth)
     panelWidth = width
-    let size = NSSize(width: width, height: previewHeight + 10 + minimumInputHeight)
+    let size = NSSize(
+      width: width,
+      height: PromptLayoutMetrics.panelHeight(
+        previewHeight: previewHeight,
+        inputHeight: minimumInputHeight,
+        detectedKeywordCount: 0
+      )
+    )
     panel.setContentSize(size)
     NSLayoutConstraint.activate([
       preview.topAnchor.constraint(equalTo: surface.topAnchor),
@@ -189,7 +247,31 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
       preview.widthAnchor.constraint(equalToConstant: displayedWidth),
       preview.heightAnchor.constraint(equalToConstant: previewHeight),
 
-      inputSurface.topAnchor.constraint(equalTo: preview.bottomAnchor, constant: 10),
+      statusRow.topAnchor.constraint(
+        equalTo: preview.bottomAnchor,
+        constant: PromptLayoutMetrics.imageToChipSpacing
+      ),
+      statusRow.leadingAnchor.constraint(equalTo: surface.leadingAnchor),
+      statusRow.trailingAnchor.constraint(equalTo: surface.trailingAnchor),
+      statusRow.heightAnchor.constraint(
+        equalToConstant: PromptLayoutMetrics.keywordStripHeight
+      ),
+
+      keywordStrip.topAnchor.constraint(equalTo: statusRow.topAnchor),
+      keywordStrip.leadingAnchor.constraint(equalTo: statusRow.leadingAnchor),
+      keywordStrip.bottomAnchor.constraint(equalTo: statusRow.bottomAnchor),
+      keywordStrip.trailingAnchor.constraint(
+        lessThanOrEqualTo: countdownLabel.leadingAnchor,
+        constant: -8
+      ),
+
+      countdownLabel.centerYAnchor.constraint(equalTo: statusRow.centerYAnchor),
+      countdownLabel.trailingAnchor.constraint(equalTo: statusRow.trailingAnchor, constant: -2),
+
+      inputSurface.topAnchor.constraint(
+        equalTo: statusRow.bottomAnchor,
+        constant: PromptLayoutMetrics.keywordStripToComposerSpacing
+      ),
       inputSurface.leadingAnchor.constraint(equalTo: surface.leadingAnchor),
       inputSurface.trailingAnchor.constraint(equalTo: surface.trailingAnchor),
       inputSurface.bottomAnchor.constraint(equalTo: surface.bottomAnchor),
@@ -198,6 +280,9 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
       scrollView.leadingAnchor.constraint(equalTo: inputSurface.leadingAnchor, constant: 14),
       scrollView.trailingAnchor.constraint(equalTo: inputSurface.trailingAnchor, constant: -14),
       scrollView.bottomAnchor.constraint(equalTo: inputSurface.bottomAnchor, constant: -7),
+
+      savingView.centerXAnchor.constraint(equalTo: inputSurface.centerXAnchor),
+      savingView.centerYAnchor.constraint(equalTo: inputSurface.centerYAnchor),
     ])
     surface.layoutSubtreeIfNeeded()
     textView.setFrameSize(scrollView.contentSize)
@@ -205,7 +290,7 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
 
   private func startTimer() {
     timer?.invalidate()
-    guard !hasInteracted else { return }
+    guard autoSaveState.isArmed else { return }
     dismissalDeadline = Date().addingTimeInterval(dismissalDelay)
     updateCountdown()
     let countdownTimer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
@@ -216,26 +301,37 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
   }
 
   private func pauseTimer() {
-    hasInteracted = true
+    autoSaveState.registerPointerDown(on: .composer)
     timer?.invalidate()
     timer = nil
     dismissalDeadline = nil
     textView.unfocusedPlaceholder = textView.focusedPlaceholder
+    countdownLabel.isHidden = true
   }
 
   private func updateCountdown() {
     guard let dismissalDeadline else { return }
     let remaining = Int(ceil(dismissalDeadline.timeIntervalSinceNow))
     guard remaining > 0 else {
-      finish(prompt: nil, slot: .primary)
+      finish(prompt: nil, keywords: [], slot: .primary)
       return
     }
-    textView.unfocusedPlaceholder = "Auto-saves in \(remaining)s"
+    if let countdown = autoSaveState.countdownText(
+      seconds: remaining,
+      showsCountdown: showsCountdown
+    ) {
+      countdownLabel.stringValue = countdown
+      countdownLabel.isHidden = false
+    } else {
+      countdownLabel.stringValue = ""
+      countdownLabel.isHidden = true
+    }
   }
 
   private func finishWithCurrentText(slot: SaveLocationSlot) {
     let prompt = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
-    finish(prompt: prompt.isEmpty ? nil : prompt, slot: slot)
+    let keywords = prompt.isEmpty ? [] : effectiveKeywords(in: prompt)
+    finish(prompt: prompt.isEmpty ? nil : prompt, keywords: keywords, slot: slot)
   }
 
   private func finishDragging() {
@@ -246,23 +342,39 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
     onDragged()
   }
 
-  private func finish(prompt: String?, slot: SaveLocationSlot) {
+  private func finish(prompt: String?, keywords: [String], slot: SaveLocationSlot) {
     guard !hasCompleted else { return }
     hasCompleted = true
     timer?.invalidate()
     textView.isEditable = false
-    completion(prompt, slot) { [weak self] in
+    showSavingState()
+    completion(prompt, keywords, slot) { [weak self] in
       self?.panel.orderOut(nil)
     }
   }
 
+  private func showSavingState() {
+    panel.makeFirstResponder(nil)
+    countdownLabel.isHidden = true
+    scrollView.isHidden = true
+    savingView.isHidden = false
+    savingIndicator.startAnimation(nil)
+  }
+
   func textDidChange(_ notification: Notification) {
     pauseTimer()
+    updateKeywordChips()
     resizeEditorToFit()
   }
 
-  func textViewDidChangeSelection(_ notification: Notification) {
-    pauseTimer()
+  private func effectiveKeywords(in prompt: String) -> [String] {
+    keywordState.detectedKeywords(in: prompt)
+  }
+
+  private func updateKeywordChips() {
+    let keywords = effectiveKeywords(in: textView.string)
+    visibleKeywordCount = keywords.count
+    keywordStrip.setKeywords(keywords)
   }
 
   private func resizeEditorToFit() {
@@ -286,7 +398,11 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
       maximumInputHeight,
       max(minimumInputHeight, textHeight + 14)
     )
-    let desiredPanelHeight = previewHeight + 10 + desiredInputHeight
+    let desiredPanelHeight = PromptLayoutMetrics.panelHeight(
+      previewHeight: previewHeight,
+      inputHeight: desiredInputHeight,
+      detectedKeywordCount: visibleKeywordCount
+    )
     let currentFrame = panel.frame
 
     if abs(currentFrame.height - desiredPanelHeight) >= 1 {
@@ -314,6 +430,7 @@ final class PromptPanelController: NSObject, NSTextViewDelegate {
 private final class DraggableImageView: NSView, NSDraggingSource {
   var image: NSImage? { didSet { needsDisplay = true } }
   var fileURLsProvider: (() -> [URL])?
+  var onMouseDown: (() -> Void)?
   var onDraggingStarted: (() -> Void)?
   private var isDraggingFiles = false
 
@@ -335,6 +452,7 @@ private final class DraggableImageView: NSView, NSDraggingSource {
 
   override func mouseDown(with event: NSEvent) {
     window?.makeFirstResponder(nil)
+    onMouseDown?()
     isDraggingFiles = false
   }
 
@@ -363,6 +481,85 @@ private final class DraggableImageView: NSView, NSDraggingSource {
   func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { true }
 }
 
+private final class KeywordChipStripView: NSView {
+  var onRemove: ((String) -> Void)?
+  private var buttons: [KeywordChipButton] = []
+  private let chipHeight: CGFloat = 22
+  private let horizontalSpacing: CGFloat = 6
+
+  override var isFlipped: Bool { true }
+
+  func setKeywords(_ keywords: [String]) {
+    guard buttons.map(\.keyword) != keywords else { return }
+    buttons.forEach { $0.removeFromSuperview() }
+    buttons = keywords.map { keyword in
+      let button = KeywordChipButton(keyword: keyword)
+      button.target = self
+      button.action = #selector(removeKeyword(_:))
+      addSubview(button)
+      return button
+    }
+    needsLayout = true
+  }
+
+  override func layout() {
+    super.layout()
+    guard !buttons.isEmpty else { return }
+    let spacingWidth = horizontalSpacing * CGFloat(max(0, buttons.count - 1))
+    let preferredWidth = buttons.reduce(0) { $0 + $1.requiredWidth } + spacingWidth
+    let compressedWidth = max(1, (bounds.width - spacingWidth) / CGFloat(buttons.count))
+    var x: CGFloat = 0
+    for button in buttons {
+      let buttonWidth =
+        preferredWidth <= bounds.width ? button.requiredWidth : min(button.requiredWidth, compressedWidth)
+      button.frame = NSRect(x: x, y: 0, width: buttonWidth, height: chipHeight)
+      x += buttonWidth + horizontalSpacing
+    }
+  }
+
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    buttons.forEach { $0.updateColors() }
+  }
+
+  @objc private func removeKeyword(_ sender: KeywordChipButton) {
+    onRemove?(sender.keyword)
+  }
+}
+
+private final class KeywordChipButton: NSButton {
+  let keyword: String
+
+  init(keyword: String) {
+    self.keyword = keyword
+    super.init(frame: .zero)
+    title = "\(KeywordDetector.hashtag(for: keyword))  ×"
+    font = .systemFont(ofSize: 11, weight: .semibold)
+    isBordered = false
+    bezelStyle = .inline
+    setButtonType(.momentaryChange)
+    cell?.lineBreakMode = .byTruncatingTail
+    wantsLayer = true
+    layer?.cornerRadius = 6
+    toolTip = "Remove tag"
+    setAccessibilityLabel("Remove \(KeywordDetector.hashtag(for: keyword)) tag")
+    updateColors()
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  var requiredWidth: CGFloat {
+    ceil((title as NSString).size(withAttributes: [.font: font as Any]).width + 16)
+  }
+
+  func updateColors() {
+    effectiveAppearance.performAsCurrentDrawingAppearance {
+      contentTintColor = .systemRed
+      layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.14).cgColor
+    }
+  }
+}
+
 private final class PromptPanel: NSPanel {
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { false }
@@ -374,16 +571,23 @@ private final class PromptTextView: NSTextView {
   var onCancel: (() -> Void)?
 
   var focusedPlaceholder = "↩ Save"
-  var unfocusedPlaceholder = "Auto-saves in 5s" {
+  var unfocusedPlaceholder = "Add context…" {
     didSet { needsDisplay = true }
   }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
   override func becomeFirstResponder() -> Bool {
     let result = super.becomeFirstResponder()
     if result {
-      // On the first click, AppKit assigns the responder before marking the panel key.
-      // Do not gate this interaction on window.isKeyWindow.
-      onInteraction?()
+      if let event = NSApp.currentEvent,
+        PromptInteractionPolicy.shouldPauseForResponderActivation(
+          isLeftMouseDown: event.type == .leftMouseDown,
+          isInsideComposer: bounds.contains(convert(event.locationInWindow, from: nil))
+        )
+      {
+        onInteraction?()
+      }
       needsDisplay = true
     }
     return result

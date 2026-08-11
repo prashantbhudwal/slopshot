@@ -18,7 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private var debugCaptureDismissalDelayOverride: TimeInterval? {
     #if DEBUG
-      CommandLine.arguments.contains("--capture-full") ? 60 : nil
+      CommandLine.arguments.contains("--capture-full")
+        || CommandLine.arguments.contains("--prompt-delay-60") ? 60 : nil
     #else
       nil
     #endif
@@ -31,14 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       } else if CommandLine.arguments.contains("--appearance-dark") {
         NSApp.appearance = NSAppearance(named: .darkAqua)
       }
-      let isShowingDebugWindow =
-        CommandLine.arguments.contains("--show-settings")
-        || CommandLine.arguments.contains("--show-prompt")
-        || CommandLine.arguments.contains("--capture-full")
-      NSApp.setActivationPolicy(isShowingDebugWindow ? .regular : .accessory)
-    #else
-      NSApp.setActivationPolicy(.accessory)
     #endif
+    NSApp.setActivationPolicy(.accessory)
     configureMainMenu()
     configureMenuBar()
     hotKeys.onAction = { [weak self] action in

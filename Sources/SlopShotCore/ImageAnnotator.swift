@@ -41,13 +41,22 @@ public enum ImageAnnotator {
       throw ImageAnnotationError.unreadableImage
     }
 
-    let footerText =
+    let tags = metadata.keywords.map { KeywordDetector.hashtag(for: $0) }.joined(separator: " ")
+    let promptHeader = tags.isEmpty ? "Prompt" : "Prompt  \(tags)"
+    let footerText = metadata.visualPromptEmbedded ? "\(promptHeader)\n\(metadata.prompt)" : metadataPointer
+    let headerRange =
       metadata.visualPromptEmbedded
-      ? "Prompt\n\(metadata.prompt)"
-      : metadataPointer
+      ? NSRange(location: 0, length: (promptHeader as NSString).length)
+      : nil
+    let highlightedRange =
+      metadata.visualPromptEmbedded && !tags.isEmpty
+      ? NSRange(location: ("Prompt  " as NSString).length, length: (tags as NSString).length)
+      : nil
     let composedImage = try compose(
       image: image,
       footerText: footerText,
+      headerRange: headerRange,
+      highlightedRange: highlightedRange,
       promptSize: promptSize
     )
     let xmp = try makeMetadata(metadata)
@@ -114,32 +123,75 @@ public enum ImageAnnotator {
       capturedAt: capturedAt,
       displayIndex: displayIndex,
       displayCount: displayCount,
-      visualPromptEmbedded: visualString == "true"
+      visualPromptEmbedded: visualString == "true",
+      keywords: value("keywords").map {
+        $0.split(separator: ",").map(String.init).filter { !$0.isEmpty }
+      } ?? []
     )
   }
 
   private static func compose(
     image: CGImage,
     footerText: String,
+    headerRange: NSRange?,
+    highlightedRange: NSRange?,
     promptSize: PromptSize
   ) throws -> CGImage {
     let width = image.width
     let fontSize = promptSize.fontSize(for: width)
-    let padding = max(16, fontSize)
+    let horizontalPadding = max(18, fontSize * 1.2)
+    let verticalPadding = max(16, fontSize)
     let font = CTFontCreateWithName(".AppleSystemUIFont" as CFString, fontSize, nil)
     let attributes: [NSAttributedString.Key: Any] = [
       NSAttributedString.Key(kCTFontAttributeName as String): font,
       NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(
         gray: 0.96, alpha: 1),
     ]
-    let text = NSAttributedString(string: footerText, attributes: attributes)
+    let text = NSMutableAttributedString(string: footerText, attributes: attributes)
+    if let headerRange {
+      let labelFontSize = max(11, fontSize * 0.78)
+      let labelFont = CTFontCreateWithName(
+        ".AppleSystemUIFontMonospaced" as CFString,
+        labelFontSize,
+        nil
+      )
+      text.addAttribute(
+        NSAttributedString.Key(kCTFontAttributeName as String),
+        value: labelFont,
+        range: headerRange
+      )
+
+      var paragraphSpacing = max(8, fontSize * 0.55)
+      let paragraphStyle = withUnsafePointer(to: &paragraphSpacing) { spacingPointer in
+        var setting = CTParagraphStyleSetting(
+          spec: .paragraphSpacing,
+          valueSize: MemoryLayout<CGFloat>.size,
+          value: spacingPointer
+        )
+        return CTParagraphStyleCreate(&setting, 1)
+      }
+      text.addAttribute(
+        NSAttributedString.Key(kCTParagraphStyleAttributeName as String),
+        value: paragraphStyle,
+        range: headerRange
+      )
+    }
+    if let highlightedRange {
+      text.addAttribute(
+        NSAttributedString.Key(kCTForegroundColorAttributeName as String),
+        value: CGColor(red: 1, green: 0.27, blue: 0.23, alpha: 1),
+        range: highlightedRange
+      )
+    }
     let framesetter = CTFramesetterCreateWithAttributedString(text)
     let constraint = CGSize(
-      width: max(1, CGFloat(width) - (padding * 2)), height: .greatestFiniteMagnitude)
+      width: max(1, CGFloat(width) - (horizontalPadding * 2)),
+      height: .greatestFiniteMagnitude
+    )
     let suggested = CTFramesetterSuggestFrameSizeWithConstraints(
       framesetter, CFRange(), nil, constraint, nil)
     let separatorHeight = max(2, min(6, Int(ceil(CGFloat(width) * 0.003))))
-    let contentHeight = Int(ceil(suggested.height + padding * 2))
+    let contentHeight = Int(ceil(suggested.height + verticalPadding * 2))
     let footerHeight = contentHeight + separatorHeight
     let totalHeight = image.height + footerHeight
 
@@ -169,10 +221,10 @@ public enum ImageAnnotator {
     context.draw(image, in: CGRect(x: 0, y: footerHeight, width: width, height: image.height))
 
     let textRect = CGRect(
-      x: padding,
-      y: padding,
-      width: CGFloat(width) - padding * 2,
-      height: CGFloat(contentHeight) - padding * 2
+      x: horizontalPadding,
+      y: verticalPadding,
+      width: CGFloat(width) - horizontalPadding * 2,
+      height: CGFloat(contentHeight) - verticalPadding * 2
     )
     let path = CGPath(rect: textRect, transform: nil)
     let frame = CTFramesetterCreateFrame(framesetter, CFRange(), path, nil)
@@ -206,6 +258,7 @@ public enum ImageAnnotator {
       "displayIndex": String(value.displayIndex),
       "displayCount": String(value.displayCount),
       "visualPromptEmbedded": String(value.visualPromptEmbedded),
+      "keywords": value.keywords.joined(separator: ","),
     ]
     for (key, item) in values {
       guard

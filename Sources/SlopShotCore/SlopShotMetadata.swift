@@ -9,6 +9,7 @@ public struct SlopShotMetadata: Codable, Equatable, Sendable {
   public let displayIndex: Int
   public let displayCount: Int
   public let visualPromptEmbedded: Bool
+  public let keywords: [String]
 
   public init(
     captureId: UUID,
@@ -16,7 +17,8 @@ public struct SlopShotMetadata: Codable, Equatable, Sendable {
     capturedAt: Date,
     displayIndex: Int,
     displayCount: Int,
-    visualPromptEmbedded: Bool
+    visualPromptEmbedded: Bool,
+    keywords: [String] = []
   ) {
     self.captureId = captureId
     self.prompt = prompt
@@ -25,5 +27,6 @@ public struct SlopShotMetadata: Codable, Equatable, Sendable {
     self.displayIndex = displayIndex
     self.displayCount = displayCount
     self.visualPromptEmbedded = visualPromptEmbedded
+    self.keywords = keywords
   }
 }

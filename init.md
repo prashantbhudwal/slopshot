@@ -35,7 +35,7 @@ Every SlopShot surface follows a strict minimal-design rule: use native macOS ty
 After a successful capture, SlopShot displays a borderless thumbnail in the bottom-right corner of the relevant screen with a text field beneath the image.
 
 - The idle window defaults to five seconds.
-- The empty, unfocused composer shows a live `Auto-saves in <seconds>s` countdown.
+- The empty, unfocused composer shows `Add context…`. A separate status row above it shows a live `Saving in <seconds>s` countdown by default. Settings can hide the countdown without disabling the timer.
 - Settings can change the idle delay to 3, 5, 7, or 10 seconds.
 - If the user does nothing, SlopShot saves the original PNG unchanged.
 - Placing the cursor in the field or otherwise interacting with it permanently disables idle dismissal for that prompt.
@@ -46,7 +46,7 @@ After a successful capture, SlopShot displays a borderless thumbnail in the bott
 - Escape discards the prompt and saves the original screenshot.
 - The field is a standard native macOS text control, so macOS Dictation and third-party transcription utilities can type into it. SlopShot does not record audio, request microphone access, or perform transcription.
 - Chained capture can synthesize one configured shortcut after focusing the prompt, enabling third-party dictation workflows. This optional feature requires macOS Accessibility permission; ordinary capture does not.
-- The thumbnail is for prompt entry only. It does not provide markup, cropping, drag-out, or sharing controls.
+- The thumbnail image supports immediate Finder-style file dragging. The prompt surface does not provide markup, cropping, or other sharing controls.
 
 Multiple captures may remain pending independently. A full-screen capture on a multi-display system creates one PNG per display but presents one grouped prompt interaction. Every image in the group receives the same prompt and a shared capture ID.
 
@@ -57,11 +57,13 @@ When a nonblank prompt is committed, its raw text is always written into image m
 Visual prompt text is enabled by default. In that mode, SlopShot expands the canvas downward and appends a dark, high-contrast footer separated from the captured pixels by a clear neutral divider:
 
 ```text
-Prompt
+Prompt  #bug
 <the complete prompt>
 ```
 
-The footer wraps multiline text without cropping it. It never overlays, scales, or removes pixels from the original capture. Its text size defaults to Small and can be set to Small, Medium, or Large in Settings.
+The footer wraps multiline text without cropping it. It never overlays, scales, or removes pixels from the original capture. Its text size defaults to Small and can be set to Small, Medium, or Large in Settings. Detected keyword hashtags appear in red beside `Prompt`.
+
+Keyword detection starts with `bug` and accepts a comma-separated Settings value. Matching is case-insensitive and whole-word. Clearing the setting disables detection. Detected keywords appear immediately in a fixed-height chip row above the composer, so detection causes no layout shift. Removing a live chip suppresses that tag for the current capture. Saved tags are written to both the footer and SlopShot metadata.
 
 If visual prompt text is disabled, SlopShot still appends a small footer, but it contains only:
 
@@ -85,9 +87,11 @@ Settings contains:
 - A shortcut recorder for area/window capture
 - A `Command-Option-5` chained-capture recorder and an optional clearable target-shortcut recorder
 - A configurable 3, 5, 7, or 10-second auto-save delay
+- A countdown-visibility toggle that does not disable auto-save
 - Two independently selectable save locations, both defaulting to Desktop
 - A toggle for embedding the complete prompt visibly, enabled by default
 - A Small, Medium, or Large saved-image prompt-size selector
+- A comma-separated keyword detector, defaulting to `bug`
 - A launch-at-login toggle, disabled by default
 
 Preferences persist locally. PNG is the only image format in v1.
@@ -136,6 +140,7 @@ The raw prompt is stored in both the standard PNG Description field and a versio
 | `displayIndex` | One-based index of this image in a grouped capture |
 | `displayCount` | Total number of images in the grouped capture |
 | `visualPromptEmbedded` | Whether the complete prompt, rather than only the metadata pointer, appears in the footer |
+| `keywords` | Comma-separated keywords detected and accepted for this prompt |
 
 Metadata round-tripping must preserve the prompt exactly, including Unicode and line breaks. Existing safe screenshot metadata should be retained when the annotated PNG is encoded.
 

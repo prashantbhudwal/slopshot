@@ -5,7 +5,16 @@ import SwiftUI
 @MainActor
 final class SettingsWindowController: NSWindowController {
   init(preferences: Preferences, onShortcutChange: @escaping () -> Void) {
-    let view = SettingsView(preferences: preferences, onShortcutChange: onShortcutChange)
+    let visibleHeight = NSScreen.main?.visibleFrame.height ?? 900
+    let contentSize = NSSize(
+      width: 480,
+      height: min(920, max(620, visibleHeight - 48))
+    )
+    let view = SettingsView(
+      preferences: preferences,
+      onShortcutChange: onShortcutChange,
+      contentSize: contentSize
+    )
     let host = NSHostingController(rootView: view)
     let window = NSWindow(contentViewController: host)
     window.title = "SlopShot"
@@ -14,7 +23,7 @@ final class SettingsWindowController: NSWindowController {
     window.titleVisibility = .hidden
     window.isMovableByWindowBackground = true
     window.backgroundColor = .windowBackgroundColor
-    window.setContentSize(NSSize(width: 440, height: 700))
+    window.setContentSize(contentSize)
     window.center()
     super.init(window: window)
     shouldCascadeWindows = false
@@ -26,6 +35,7 @@ final class SettingsWindowController: NSWindowController {
     showWindow(nil)
     window?.center()
     window?.makeKeyAndOrderFront(nil)
+    window?.makeFirstResponder(nil)
     NSApp.activate(ignoringOtherApps: true)
   }
 }
@@ -33,13 +43,11 @@ final class SettingsWindowController: NSWindowController {
 private struct SettingsView: View {
   @ObservedObject var preferences: Preferences
   let onShortcutChange: () -> Void
+  let contentSize: NSSize
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      Text("Settings")
-        .font(.system(size: 22, weight: .semibold))
-        .padding(.bottom, 30)
-
+    ScrollView(.vertical) {
+      VStack(alignment: .leading, spacing: 0) {
       settingRow("All displays") {
         HStack(spacing: 12) {
           ShortcutRecorder(
@@ -136,6 +144,15 @@ private struct SettingsView: View {
         .frame(width: 104)
       }
 
+      settingRow("Show countdown") {
+        Toggle("", isOn: $preferences.showAutoSaveCountdown)
+          .labelsHidden()
+          .toggleStyle(.switch)
+          .frame(width: 104, alignment: .trailing)
+          .help("Auto-save still runs when hidden")
+      }
+      .padding(.top, 18)
+
       settingRow("↩ saves to") {
         locationButton(preferences.primarySaveDirectory) {
           chooseDirectory(current: preferences.primarySaveDirectory) {
@@ -194,20 +211,48 @@ private struct SettingsView: View {
       .foregroundStyle(.secondary)
       .padding(.top, 8)
 
-      Divider()
-        .padding(.vertical, 22)
+        Divider()
+          .padding(.vertical, 22)
 
-      settingRow("Open at login") {
-        Toggle("", isOn: $preferences.launchAtLogin)
-          .labelsHidden()
-          .toggleStyle(.switch)
-          .frame(width: 104, alignment: .trailing)
+        Text("Keyword detection")
+          .font(.system(size: 13, weight: .semibold))
+
+        settingRow("Keywords") {
+          TextField("bug, feature", text: $preferences.keywordValues)
+            .textFieldStyle(.plain)
+            .multilineTextAlignment(.trailing)
+            .padding(.vertical, 5)
+            .overlay(alignment: .bottom) { Divider() }
+            .frame(width: 220)
+            .help("Comma-separated · clear to disable")
+        }
+        .padding(.top, 16)
+
+        HStack(spacing: 6) {
+          Image(systemName: "info.circle")
+          Text("Comma-separated · clear to disable")
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .padding(.top, 8)
+
+        Divider()
+          .padding(.vertical, 22)
+
+        settingRow("Open at login") {
+          Toggle("", isOn: $preferences.launchAtLogin)
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .frame(width: 104, alignment: .trailing)
+        }
+
+        Spacer(minLength: 0)
       }
-
-      Spacer(minLength: 0)
+      .padding(32)
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .padding(32)
-    .frame(width: 440, height: 700)
+    .scrollIndicators(.visible)
+    .frame(width: contentSize.width, height: contentSize.height)
   }
 
   private var promptStorageDescription: String {

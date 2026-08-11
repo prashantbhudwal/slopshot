@@ -49,6 +49,32 @@ func makePNG(at url: URL, width: Int, height: Int) throws {
   try require(CGImageDestinationFinalize(destination), "Cannot write test PNG")
 }
 
+func containsRedPixel(in image: CGImage) -> Bool {
+  let width = image.width
+  let height = image.height
+  var pixels = [UInt8](repeating: 0, count: width * height * 4)
+  guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return false }
+  let rendered = pixels.withUnsafeMutableBytes { bytes -> Bool in
+    guard
+      let context = CGContext(
+        data: bytes.baseAddress,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: width * 4,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+      )
+    else { return false }
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    return true
+  }
+  guard rendered else { return false }
+  return stride(from: 0, to: pixels.count, by: 4).contains { offset in
+    pixels[offset] > 180 && pixels[offset + 1] < 140 && pixels[offset + 2] < 140
+  }
+}
+
 func runCommand(_ executable: String, arguments: [String]) throws {
   let process = Process()
   let errors = Pipe()
@@ -84,6 +110,94 @@ func verifyFilenames() throws {
     fileExists: { _ in false }
   )
   try require(result.lastPathComponent.hasSuffix(" (2).png"), "Filename collision handling failed")
+}
+
+func verifyKeywordDetection() throws {
+  let configured = KeywordDetector.configuredKeywords(
+    from: " bug, Feature Request, #BUG, accessibility "
+  )
+  try require(
+    configured == ["bug", "feature request", "accessibility"],
+    "Keyword parsing or deduplication failed"
+  )
+  try require(
+    KeywordDetector.detectedKeywords(
+      in: "This BUG needs a feature   request, not a debugger change.",
+      commaSeparatedValues: "bug, feature request, debug"
+    ) == ["bug", "feature request"],
+    "Whole-word keyword detection failed"
+  )
+  try require(
+    KeywordDetector.detectedKeywords(in: "debugger", commaSeparatedValues: "bug").isEmpty,
+    "A partial word triggered keyword detection"
+  )
+  try require(
+    KeywordDetector.detectedKeywords(in: "bug", commaSeparatedValues: "").isEmpty,
+    "An empty keyword setting did not disable detection"
+  )
+  try require(
+    KeywordDetector.hashtag(for: "feature request") == "#feature-request",
+    "Multiword hashtag formatting failed"
+  )
+}
+
+func verifyPromptBehavior() throws {
+  var autoSave = PromptAutoSaveState()
+  autoSave.registerPointerDown(on: .image)
+  try require(autoSave.isArmed, "An image press disabled auto-save")
+  try require(
+    autoSave.composerPlaceholder == "Add context…",
+    "Composer affordance is missing"
+  )
+  try require(
+    autoSave.countdownText(seconds: 5, showsCountdown: true) == "Saving in 5s",
+    "Visible countdown text is incorrect"
+  )
+  try require(
+    autoSave.countdownText(seconds: 5, showsCountdown: false) == nil,
+    "Hidden countdown still produced UI text"
+  )
+  try require(autoSave.isArmed, "Hiding countdown text disabled auto-save")
+  autoSave.registerPointerDown(on: .composer)
+  try require(!autoSave.isArmed, "A composer press did not disable auto-save")
+
+  try require(
+    PromptInteractionPolicy.shouldPauseForResponderActivation(
+      isLeftMouseDown: true,
+      isInsideComposer: true
+    ),
+    "A real composer click was not recognized"
+  )
+  try require(
+    !PromptInteractionPolicy.shouldPauseForResponderActivation(
+      isLeftMouseDown: true,
+      isInsideComposer: false
+    ),
+    "An image click was treated as composer interaction"
+  )
+
+  let noTagsHeight = PromptLayoutMetrics.panelHeight(
+    previewHeight: 180,
+    inputHeight: 58,
+    detectedKeywordCount: 0
+  )
+  let tagsHeight = PromptLayoutMetrics.panelHeight(
+    previewHeight: 180,
+    inputHeight: 58,
+    detectedKeywordCount: 4
+  )
+  try require(noTagsHeight == tagsHeight, "Keyword chips caused a layout shift")
+
+  var keywords = PromptKeywordSelectionState(commaSeparatedValues: "bug, feature")
+  try require(
+    keywords.detectedKeywords(in: "Bug in this feature") == ["bug", "feature"],
+    "Live keyword state did not detect configured values"
+  )
+  keywords.suppress("bug")
+  try require(
+    keywords.detectedKeywords(in: "Bug in this feature") == ["feature"],
+    "A removed keyword chip was added back"
+  )
 }
 
 func verifyReleaseSignatures() throws {
@@ -168,7 +282,8 @@ func verifyAnnotation() throws {
     capturedAt: Date(timeIntervalSince1970: 1_723_392_000.125_789),
     displayIndex: 1,
     displayCount: 2,
-    visualPromptEmbedded: true
+    visualPromptEmbedded: true,
+    keywords: ["bug", "accessibility"]
   )
   try ImageAnnotator.annotate(sourceURL: source, destinationURL: output, metadata: expected)
 
@@ -180,6 +295,7 @@ func verifyAnnotation() throws {
   let image = try unwrap(
     CGImageSourceCreateImageAtIndex(imageSource, 0, nil), "Cannot decode output PNG")
   try require(image.width == 120 && image.height > 60, "Footer dimensions are invalid")
+  try require(containsRedPixel(in: image), "Detected keyword tag was not rendered in red")
   try ImageAnnotator.annotate(
     sourceURL: source,
     destinationURL: largeOutput,
@@ -206,6 +322,8 @@ func verifyAnnotation() throws {
 do {
   try verifyVersions()
   try verifyFilenames()
+  try verifyKeywordDetection()
+  try verifyPromptBehavior()
   try verifyReleaseSignatures()
   try verifyAnnotation()
   print("SlopShotCore verification passed")

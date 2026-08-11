@@ -12,6 +12,8 @@ final class Preferences: ObservableObject {
     static let visualPrompt = "visualPrompt"
     static let promptSize = "promptSize"
     static let autoSaveDelay = "autoSaveDelay"
+    static let showAutoSaveCountdown = "showAutoSaveCountdown"
+    static let keywordValues = "keywordValues"
     static let primarySaveDirectory = "primarySaveDirectory"
     static let secondarySaveDirectory = "secondarySaveDirectory"
     static let launchAtLogin = "launchAtLogin"
@@ -50,6 +52,14 @@ final class Preferences: ObservableObject {
 
   @Published var autoSaveDelay: Int {
     didSet { defaults.set(autoSaveDelay, forKey: Key.autoSaveDelay) }
+  }
+
+  @Published var showAutoSaveCountdown: Bool {
+    didSet { defaults.set(showAutoSaveCountdown, forKey: Key.showAutoSaveCountdown) }
+  }
+
+  @Published var keywordValues: String {
+    didSet { defaults.set(keywordValues, forKey: Key.keywordValues) }
   }
 
   @Published var primarySaveDirectory: URL {
@@ -109,6 +119,12 @@ final class Preferences: ObservableObject {
       Self.load(PromptSize.self, forKey: Key.promptSize, from: defaults) ?? .small
     let storedAutoSaveDelay = defaults.object(forKey: Key.autoSaveDelay) as? Int ?? 5
     autoSaveDelay = [3, 5, 7, 10].contains(storedAutoSaveDelay) ? storedAutoSaveDelay : 5
+    showAutoSaveCountdown =
+      defaults.object(forKey: Key.showAutoSaveCountdown) as? Bool ?? true
+    keywordValues =
+      defaults.object(forKey: Key.keywordValues) == nil
+      ? "bug"
+      : defaults.string(forKey: Key.keywordValues) ?? ""
     let desktop =
       FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
       ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")

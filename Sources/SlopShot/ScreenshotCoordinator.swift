@@ -25,7 +25,13 @@ final class ScreenshotCoordinator {
 
   private struct FinalizeResult: Sendable {
     let savedURLs: [URL]
+    let clipboardPayloads: [ClipboardPayload]
     let failures: [String]
+  }
+
+  private struct ClipboardPayload: Sendable {
+    let url: URL
+    let pngData: Data?
   }
 
   private let preferences: Preferences
@@ -33,6 +39,7 @@ final class ScreenshotCoordinator {
   private var panels: [UUID: PromptPanelController] = [:]
   private var panelOrder: [UUID] = []
   private var permissionWasRequested = false
+  private var clipboardProviders: [ClipboardPNGDataProvider] = []
 
   init(preferences: Preferences, promptDismissalDelayOverride: TimeInterval? = nil) {
     self.preferences = preferences
@@ -153,15 +160,18 @@ final class ScreenshotCoordinator {
       imageURLs: files,
       savePlaceholder: savePlaceholder,
       dismissalDelay: promptDismissalDelayOverride ?? TimeInterval(preferences.autoSaveDelay),
+      showsCountdown: preferences.showAutoSaveCountdown,
+      keywordValues: preferences.keywordValues,
       dragFiles: { [weak self] in
         self?.saveForDrag(group: completedGroup, destinationDirectory: primaryDirectory) ?? []
       },
       onDragged: { [weak self] in self?.dismiss(group: completedGroup) },
-      completion: { [weak self] prompt, slot, finished in
+      completion: { [weak self] prompt, keywords, slot, finished in
         let destination = slot == .primary ? primaryDirectory : secondaryDirectory
         self?.complete(
           group: completedGroup,
           prompt: prompt,
+          keywords: keywords,
           destinationDirectory: destination,
           finished: finished
         )
@@ -181,12 +191,12 @@ final class ScreenshotCoordinator {
   private func complete(
     group: CaptureGroup,
     prompt: String?,
+    keywords: [String],
     destinationDirectory: URL,
     finished: @escaping () -> Void
   ) {
     let visualPrompt = preferences.visualPromptEnabled
     let promptSize = preferences.promptSize
-
     Task {
       let result = await Task.detached(priority: .userInitiated) {
         Self.finalize(
@@ -194,10 +204,12 @@ final class ScreenshotCoordinator {
           prompt: prompt,
           visualPrompt: visualPrompt,
           promptSize: promptSize,
+          keywords: keywords,
+          preloadClipboardData: true,
           destinationDirectory: destinationDirectory
         )
       }.value
-      let clipboardUpdated = copyToClipboard(result.savedURLs)
+      let clipboardUpdated = copyToClipboard(result.clipboardPayloads)
       finished()
       dismiss(group: group)
       if !clipboardUpdated, !result.savedURLs.isEmpty {
@@ -222,26 +234,31 @@ final class ScreenshotCoordinator {
       prompt: nil,
       visualPrompt: false,
       promptSize: .small,
+      keywords: [],
+      preloadClipboardData: false,
       destinationDirectory: destinationDirectory
     )
-    copyToClipboard(result.savedURLs)
+    copyToClipboard(result.clipboardPayloads)
     reportFinalizeFailures(result.failures)
     return result.savedURLs
   }
 
   @discardableResult
-  private func copyToClipboard(_ urls: [URL]) -> Bool {
-    guard !urls.isEmpty else { return false }
-    let items = urls.map { url -> NSPasteboardItem in
+  private func copyToClipboard(_ payloads: [ClipboardPayload]) -> Bool {
+    guard !payloads.isEmpty else { return false }
+    let providers = payloads.map {
+      ClipboardPNGDataProvider(url: $0.url, preloadedData: $0.pngData)
+    }
+    let items = zip(payloads, providers).map { payload, provider -> NSPasteboardItem in
       let item = NSPasteboardItem()
-      item.setString(url.absoluteString, forType: .fileURL)
-      if let data = try? Data(contentsOf: url) {
-        item.setData(data, forType: .png)
-      }
+      item.setString(payload.url.absoluteString, forType: .fileURL)
+      item.setDataProvider(provider, forTypes: [.png])
       return item
     }
     NSPasteboard.general.clearContents()
-    return NSPasteboard.general.writeObjects(items)
+    let succeeded = NSPasteboard.general.writeObjects(items)
+    clipboardProviders = succeeded ? providers : []
+    return succeeded
   }
 
   private func reportFinalizeFailures(_ failures: [String]) {
@@ -258,6 +275,8 @@ final class ScreenshotCoordinator {
     prompt: String?,
     visualPrompt: Bool,
     promptSize: PromptSize,
+    keywords: [String],
+    preloadClipboardData: Bool,
     destinationDirectory: URL
   ) -> FinalizeResult {
     let manager = FileManager.default
@@ -301,7 +320,8 @@ final class ScreenshotCoordinator {
           capturedAt: group.capturedAt,
           displayIndex: offset + 1,
           displayCount: group.imageURLs.count,
-          visualPromptEmbedded: visualPrompt
+          visualPromptEmbedded: visualPrompt,
+          keywords: keywords
         )
         do {
           try ImageAnnotator.annotate(
@@ -334,7 +354,17 @@ final class ScreenshotCoordinator {
       }
     }
     try? manager.removeItem(at: group.directory)
-    return FinalizeResult(savedURLs: saved, failures: failures)
+    let clipboardPayloads = saved.map {
+      ClipboardPayload(
+        url: $0,
+        pngData: preloadClipboardData ? try? Data(contentsOf: $0) : nil
+      )
+    }
+    return FinalizeResult(
+      savedURLs: saved,
+      clipboardPayloads: clipboardPayloads,
+      failures: failures
+    )
   }
 
   nonisolated private static func locationName(_ url: URL) -> String {
@@ -379,6 +409,25 @@ final class ScreenshotCoordinator {
     alert.addButton(withTitle: "OK")
     NSApp.activate(ignoringOtherApps: true)
     alert.runModal()
+  }
+}
+
+private final class ClipboardPNGDataProvider: NSObject, NSPasteboardItemDataProvider {
+  private let url: URL
+  private let preloadedData: Data?
+
+  init(url: URL, preloadedData: Data?) {
+    self.url = url
+    self.preloadedData = preloadedData
+  }
+
+  func pasteboard(
+    _ pasteboard: NSPasteboard?,
+    item: NSPasteboardItem,
+    provideDataForType type: NSPasteboard.PasteboardType
+  ) {
+    guard type == .png, let data = preloadedData ?? (try? Data(contentsOf: url)) else { return }
+    item.setData(data, forType: .png)
   }
 }
 
