@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags must use vMAJOR.MINOR.PATCH." >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test
+        run: |
+          swift run SlopShotCoreTests
+          ./scripts/package-release.sh "${{ steps.version.outputs.value }}"
+
+      - name: Verify release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            shasum -a 256 -c SlopShot-arm64.zip.sha256
+          )
+          work_dir="$(mktemp -d)"
+          trap 'rm -rf "$work_dir"' EXIT
+          ditto -x -k dist/SlopShot-arm64.zip "$work_dir"
+          app="$work_dir/SlopShot.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = "com.prashantbhudwal.slopshot"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "${{ steps.version.outputs.value }}"
+          lipo "$app/Contents/MacOS/SlopShot" -verify_arch arm64
+          codesign --verify --deep --strict "$app"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/SlopShot-arm64.zip \
+            dist/SlopShot-arm64.zip.sha256 \
+            install.sh \
+            --title "SlopShot ${{ steps.version.outputs.value }}" \
+            --generate-notes \
+            --verify-tag
