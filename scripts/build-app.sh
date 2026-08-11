@@ -25,6 +25,7 @@ BIN_DIR=$(swift build -c "$CONFIGURATION" --arch arm64 --show-bin-path)
 /bin/cp \
   "$PROJECT_DIR/Resources/release-signing-key.pub" \
   "$APP_DIR/Contents/Resources/release-signing-key.pub"
+/bin/cp "$PROJECT_DIR/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_DIR/Contents/Info.plist"
 /usr/bin/codesign \

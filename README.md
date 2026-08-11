@@ -77,7 +77,7 @@ swift run SlopShotCoreTests
 Build the signed arm64 archive and checksum with:
 
 ```sh
-./scripts/package-release.sh 0.1.3
+./scripts/package-release.sh 0.1.4
 ```
 
 Tagged versions matching `v*` run the release workflow and publish `SlopShot-arm64.zip`, its SHA-256 checksum, the checksum's OpenSSH signature, and the installer script. The private Ed25519 key exists only in the `SLOPSHOT_RELEASE_SIGNING_KEY` GitHub Actions secret; the matching public key is bundled with the app and installer.
