@@ -7,9 +7,12 @@ RELEASE_ROOT="https://github.com/$REPOSITORY/releases/latest/download"
 WORK_DIR=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/SlopShot-install.XXXXXX")
 ARCHIVE="$WORK_DIR/SlopShot-arm64.zip"
 CHECKSUM="$WORK_DIR/SlopShot-arm64.zip.sha256"
+SIGNATURE="$WORK_DIR/SlopShot-arm64.zip.sha256.sig"
+ALLOWED_SIGNERS="$WORK_DIR/allowed_signers"
 EXTRACTED="$WORK_DIR/extracted"
 APP="$INSTALL_ROOT/SlopShot.app"
 EXPECTED_IDENTIFIER="com.prashantbhudwal.slopshot"
+RELEASE_SIGNING_PUBLIC_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGVUrQY5WnBoNfwX4c6Tzcrd6mCnkqSi6fK7HVTuigJW"
 
 say() { /bin/echo "SlopShot: $*"; }
 fail() { /bin/echo "SlopShot: $*" >&2; exit 1; }
@@ -33,12 +36,36 @@ CURL_OPTIONS="--fail --location --silent --show-error --retry 3 --retry-all-erro
 /usr/bin/curl $CURL_OPTIONS "$RELEASE_ROOT/SlopShot-arm64.zip" -o "$ARCHIVE"
 # shellcheck disable=SC2086
 /usr/bin/curl $CURL_OPTIONS "$RELEASE_ROOT/SlopShot-arm64.zip.sha256" -o "$CHECKSUM"
+# shellcheck disable=SC2086
+/usr/bin/curl $CURL_OPTIONS "$RELEASE_ROOT/SlopShot-arm64.zip.sha256.sig" -o "$SIGNATURE"
 
-say "Verifying the download"
-(
-  cd "$WORK_DIR"
-  /usr/bin/shasum -a 256 -c "$(basename "$CHECKSUM")"
+say "Verifying the signed release"
+/usr/bin/printf '%s\n' "slopshot-release $RELEASE_SIGNING_PUBLIC_KEY" > "$ALLOWED_SIGNERS"
+if ! /usr/bin/ssh-keygen \
+  -Y verify \
+  -f "$ALLOWED_SIGNERS" \
+  -I slopshot-release \
+  -n slopshot-release \
+  -s "$SIGNATURE" \
+  < "$CHECKSUM" \
+  >/dev/null 2>&1
+then
+  fail "The release signature is invalid."
+fi
+EXPECTED_HASH=$(
+  /usr/bin/awk '
+    NF {
+      count += 1
+      if (NF == 2 && $1 ~ /^[0-9a-fA-F]{64}$/ && $2 == "SlopShot-arm64.zip") {
+        hash = tolower($1)
+      }
+    }
+    END { if (count == 1 && hash != "") print hash }
+  ' "$CHECKSUM"
 )
+[ -n "$EXPECTED_HASH" ] || fail "The signed checksum manifest is invalid."
+ACTUAL_HASH=$(/usr/bin/shasum -a 256 "$ARCHIVE" | /usr/bin/awk '{print tolower($1)}')
+[ "$ACTUAL_HASH" = "$EXPECTED_HASH" ] || fail "The downloaded archive failed verification."
 
 /bin/mkdir -p "$EXTRACTED"
 /usr/bin/ditto -x -k "$ARCHIVE" "$EXTRACTED"
@@ -82,8 +109,14 @@ if ! /bin/mv "$NEW_APP" "$APP"; then
   fi
   fail "The app could not be installed."
 fi
-/usr/bin/xattr -dr com.apple.quarantine "$APP"
-/usr/bin/open "$APP"
+if ! /usr/bin/xattr -dr com.apple.quarantine "$APP" || ! /usr/bin/open "$APP"; then
+  /bin/rm -rf -- "$APP"
+  if [ -n "$BACKUP" ] && [ -d "$BACKUP" ]; then
+    /bin/mv "$BACKUP" "$APP"
+    /usr/bin/open "$APP" || true
+  fi
+  fail "The new app could not be launched; the previous version was restored."
+fi
 
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
 say "Installed version $VERSION at $APP"

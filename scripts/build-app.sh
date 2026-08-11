@@ -4,8 +4,8 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(dirname "$SCRIPT_DIR")
 CONFIGURATION=${1:-debug}
-VERSION=${SLOPSHOT_VERSION:-0.1.0}
-BUILD_NUMBER=${SLOPSHOT_BUILD_NUMBER:-1}
+VERSION=${SLOPSHOT_VERSION:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PROJECT_DIR/Resources/Info.plist")}
+BUILD_NUMBER=${SLOPSHOT_BUILD_NUMBER:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PROJECT_DIR/Resources/Info.plist")}
 OUTPUT_DIR="$PROJECT_DIR/.build/app/$CONFIGURATION"
 APP_DIR="$OUTPUT_DIR/SlopShot.app"
 
@@ -22,6 +22,9 @@ BIN_DIR=$(swift build -c "$CONFIGURATION" --arch arm64 --show-bin-path)
 /bin/mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 /bin/cp "$BIN_DIR/SlopShot" "$APP_DIR/Contents/MacOS/SlopShot"
 /bin/cp "$PROJECT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
+/bin/cp \
+  "$PROJECT_DIR/Resources/release-signing-key.pub" \
+  "$APP_DIR/Contents/Resources/release-signing-key.pub"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_DIR/Contents/Info.plist"
 /usr/bin/codesign \

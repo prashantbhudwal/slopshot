@@ -49,6 +49,24 @@ func makePNG(at url: URL, width: Int, height: Int) throws {
   try require(CGImageDestinationFinalize(destination), "Cannot write test PNG")
 }
 
+func runCommand(_ executable: String, arguments: [String]) throws {
+  let process = Process()
+  let errors = Pipe()
+  process.executableURL = URL(fileURLWithPath: executable)
+  process.arguments = arguments
+  process.standardOutput = FileHandle.nullDevice
+  process.standardError = errors
+  try process.run()
+  process.waitUntilExit()
+  guard process.terminationStatus == 0 else {
+    let detail = String(
+      decoding: errors.fileHandleForReading.readDataToEndOfFile(),
+      as: UTF8.self
+    ).trimmingCharacters(in: .whitespacesAndNewlines)
+    throw VerificationError.failed(detail.isEmpty ? "Command failed: \(executable)" : detail)
+  }
+}
+
 func verifyVersions() throws {
   try require(
     SemanticVersion("v1.10.0")! > SemanticVersion("1.9.9")!, "Semantic version ordering failed")
@@ -66,6 +84,72 @@ func verifyFilenames() throws {
     fileExists: { _ in false }
   )
   try require(result.lastPathComponent.hasSuffix(" (2).png"), "Filename collision handling failed")
+}
+
+func verifyReleaseSignatures() throws {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("SlopShot-signature-tests-\(UUID().uuidString)", isDirectory: true)
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+
+  let keyURL = root.appendingPathComponent("release-key")
+  try runCommand(
+    "/usr/bin/ssh-keygen",
+    arguments: ["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f", keyURL.path]
+  )
+  let publicKey = try String(
+    contentsOf: keyURL.appendingPathExtension("pub"),
+    encoding: .utf8
+  )
+  let manifestURL = root.appendingPathComponent("SlopShot-arm64.zip.sha256")
+  let signatureURL = manifestURL.appendingPathExtension("sig")
+  let manifest = "\(String(repeating: "a", count: 64))  SlopShot-arm64.zip\n"
+  try manifest.write(to: manifestURL, atomically: true, encoding: .utf8)
+  try runCommand(
+    "/usr/bin/ssh-keygen",
+    arguments: [
+      "-Y", "sign", "-f", keyURL.path, "-n", ReleaseVerifier.namespace, manifestURL.path,
+    ]
+  )
+
+  try ReleaseVerifier.verifySignature(
+    manifestURL: manifestURL,
+    signatureURL: signatureURL,
+    publicKey: publicKey
+  )
+  let expectedHash = try ReleaseVerifier.expectedSHA256(
+    in: Data(manifest.utf8),
+    archiveName: "SlopShot-arm64.zip"
+  )
+  try require(expectedHash == String(repeating: "a", count: 64), "Checksum parsing failed")
+
+  try "\(String(repeating: "b", count: 64))  SlopShot-arm64.zip\n".write(
+    to: manifestURL,
+    atomically: true,
+    encoding: .utf8
+  )
+  var rejectedTampering = false
+  do {
+    try ReleaseVerifier.verifySignature(
+      manifestURL: manifestURL,
+      signatureURL: signatureURL,
+      publicKey: publicKey
+    )
+  } catch {
+    rejectedTampering = true
+  }
+  try require(rejectedTampering, "A tampered checksum manifest passed signature verification")
+
+  var rejectedWrongFilename = false
+  do {
+    _ = try ReleaseVerifier.expectedSHA256(
+      in: Data("\(String(repeating: "a", count: 64))  Other.zip\n".utf8),
+      archiveName: "SlopShot-arm64.zip"
+    )
+  } catch {
+    rejectedWrongFilename = true
+  }
+  try require(rejectedWrongFilename, "A checksum for the wrong archive was accepted")
 }
 
 func verifyAnnotation() throws {
@@ -122,6 +206,7 @@ func verifyAnnotation() throws {
 do {
   try verifyVersions()
   try verifyFilenames()
+  try verifyReleaseSignatures()
   try verifyAnnotation()
   print("SlopShotCore verification passed")
 } catch {

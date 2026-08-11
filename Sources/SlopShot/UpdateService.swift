@@ -75,7 +75,11 @@ final class UpdateService {
   private func install(_ release: GitHubRelease) {
     Task {
       do {
-        let replacement = try await UpdateInstaller.stage(release: release)
+        let publicKey = try ReleaseTrust.publicKey()
+        let replacement = try await UpdateInstaller.stage(
+          release: release,
+          publicKey: publicKey
+        )
         try UpdateInstaller.replaceOnQuit(with: replacement)
       } catch {
         show(message: "Update failed", detail: error.localizedDescription, style: .warning)
@@ -101,6 +105,9 @@ private enum UpdateError: LocalizedError {
   case checksumMismatch
   case invalidBundle
   case invalidArchitecture
+  case invalidCodeSignature
+  case invalidBundleVersion
+  case missingTrustAnchor
   case notInstalled
   case commandFailed(String)
 
@@ -112,45 +119,84 @@ private enum UpdateError: LocalizedError {
     case .checksumMismatch: "The downloaded archive failed verification."
     case .invalidBundle: "The downloaded app is invalid."
     case .invalidArchitecture: "The downloaded app is not built for Apple silicon."
+    case .invalidCodeSignature: "The downloaded app's code signature is invalid."
+    case .invalidBundleVersion: "The downloaded app does not match the release version."
+    case .missingTrustAnchor: "The release-signing key is missing from this copy of SlopShot."
     case .notInstalled: "Move SlopShot to ~/Applications before updating."
     case .commandFailed(let message): message
     }
   }
 }
 
+private enum ReleaseTrust {
+  static func publicKey() throws -> String {
+    guard
+      let url = Bundle.main.url(
+        forResource: "release-signing-key",
+        withExtension: "pub"
+      ),
+      let value = try? String(contentsOf: url, encoding: .utf8)
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+      !value.isEmpty
+    else {
+      throw UpdateError.missingTrustAnchor
+    }
+    return value
+  }
+}
+
 private enum UpdateInstaller {
   private static let archiveName = "SlopShot-arm64.zip"
   private static let checksumName = "SlopShot-arm64.zip.sha256"
+  private static let signatureName = "SlopShot-arm64.zip.sha256.sig"
 
-  static func stage(release: GitHubRelease) async throws -> URL {
+  static func stage(release: GitHubRelease, publicKey: String) async throws -> URL {
     guard
       let archiveAsset = release.assets.first(where: { $0.name == archiveName }),
-      let checksumAsset = release.assets.first(where: { $0.name == checksumName })
+      let checksumAsset = release.assets.first(where: { $0.name == checksumName }),
+      let signatureAsset = release.assets.first(where: { $0.name == signatureName })
     else { throw UpdateError.missingAsset }
 
     async let archiveRequest = URLSession.shared.data(from: archiveAsset.browserDownloadURL)
     async let checksumRequest = URLSession.shared.data(from: checksumAsset.browserDownloadURL)
-    let ((archive, archiveResponse), (checksumData, checksumResponse)) = try await (
-      archiveRequest, checksumRequest
-    )
+    async let signatureRequest = URLSession.shared.data(from: signatureAsset.browserDownloadURL)
+    let ((archive, archiveResponse), (checksumData, checksumResponse), (signature, signatureResponse)) =
+      try await (
+        archiveRequest, checksumRequest, signatureRequest
+      )
     guard
       (archiveResponse as? HTTPURLResponse)?.statusCode == 200,
-      (checksumResponse as? HTTPURLResponse)?.statusCode == 200
+      (checksumResponse as? HTTPURLResponse)?.statusCode == 200,
+      (signatureResponse as? HTTPURLResponse)?.statusCode == 200
     else { throw UpdateError.releaseUnavailable }
-
-    let expected = String(decoding: checksumData, as: UTF8.self)
-      .split(whereSeparator: { $0.isWhitespace })
-      .first
-      .map(String.init)?
-      .lowercased()
-    let actual = SHA256.hash(data: archive).map { String(format: "%02x", $0) }.joined()
-    guard expected == actual else { throw UpdateError.checksumMismatch }
 
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("SlopShot-update-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    var keepRoot = false
+    defer {
+      if !keepRoot { try? FileManager.default.removeItem(at: root) }
+    }
+
     let archiveURL = root.appendingPathComponent(archiveName)
+    let checksumURL = root.appendingPathComponent(checksumName)
+    let signatureURL = root.appendingPathComponent(signatureName)
     try archive.write(to: archiveURL, options: .atomic)
+    try checksumData.write(to: checksumURL, options: .atomic)
+    try signature.write(to: signatureURL, options: .atomic)
+
+    try ReleaseVerifier.verifySignature(
+      manifestURL: checksumURL,
+      signatureURL: signatureURL,
+      publicKey: publicKey
+    )
+    let expected = try ReleaseVerifier.expectedSHA256(
+      in: checksumData,
+      archiveName: archiveName
+    )
+    let actual = SHA256.hash(data: archive).map { String(format: "%02x", $0) }.joined()
+    guard expected == actual else { throw UpdateError.checksumMismatch }
+
     try run("/usr/bin/ditto", arguments: ["-x", "-k", archiveURL.path, root.path])
 
     guard let appURL = findApp(in: root) else { throw UpdateError.invalidBundle }
@@ -158,16 +204,26 @@ private enum UpdateInstaller {
     guard
       let info = NSDictionary(contentsOf: infoURL),
       info["CFBundleIdentifier"] as? String == "com.prashantbhudwal.slopshot",
-      let executableName = info["CFBundleExecutable"] as? String
+      let executableName = info["CFBundleExecutable"] as? String,
+      let bundleVersion = info["CFBundleShortVersionString"] as? String
     else { throw UpdateError.invalidBundle }
+    let releaseVersion = release.tagName.hasPrefix("v")
+      ? String(release.tagName.dropFirst())
+      : release.tagName
+    guard bundleVersion == releaseVersion else { throw UpdateError.invalidBundleVersion }
 
     let executable = appURL.appendingPathComponent("Contents/MacOS/\(executableName)")
     do {
       try run("/usr/bin/lipo", arguments: [executable.path, "-verify_arch", "arm64"])
-      try run("/usr/bin/codesign", arguments: ["--verify", "--deep", "--strict", appURL.path])
     } catch {
       throw UpdateError.invalidArchitecture
     }
+    do {
+      try run("/usr/bin/codesign", arguments: ["--verify", "--deep", "--strict", appURL.path])
+    } catch {
+      throw UpdateError.invalidCodeSignature
+    }
+    keepRoot = true
     return appURL
   }
 

@@ -13,7 +13,7 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Validate version
         id: version
@@ -32,20 +32,53 @@ jobs:
           swift run SlopShotCoreTests
           ./scripts/package-release.sh "${{ steps.version.outputs.value }}"
 
+      - name: Sign release checksum
+        shell: bash
+        env:
+          SLOPSHOT_RELEASE_SIGNING_KEY: ${{ secrets.SLOPSHOT_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$SLOPSHOT_RELEASE_SIGNING_KEY"
+          signing_key="$(mktemp)"
+          trap 'rm -f "$signing_key"' EXIT
+          printf '%s\n' "$SLOPSHOT_RELEASE_SIGNING_KEY" > "$signing_key"
+          chmod 600 "$signing_key"
+
+          configured_public_key="$(awk '{print $1 " " $2}' Resources/release-signing-key.pub)"
+          derived_public_key="ssh-ed25519 $(ssh-keygen -y -f "$signing_key" | awk '{print $2}')"
+          test "$derived_public_key" = "$configured_public_key"
+          ssh-keygen \
+            -Y sign \
+            -f "$signing_key" \
+            -n slopshot-release \
+            dist/SlopShot-arm64.zip.sha256
+
       - name: Verify release artifacts
         shell: bash
         run: |
           set -euo pipefail
+          work_dir="$(mktemp -d)"
+          trap 'rm -rf "$work_dir"' EXIT
+          public_key="$(awk '{print $1 " " $2}' Resources/release-signing-key.pub)"
+          installer_key="$(sed -n 's/^RELEASE_SIGNING_PUBLIC_KEY="\(.*\)"$/\1/p' install.sh)"
+          test "$installer_key" = "$public_key"
+          printf 'slopshot-release %s\n' "$public_key" > "$work_dir/allowed_signers"
+          ssh-keygen \
+            -Y verify \
+            -f "$work_dir/allowed_signers" \
+            -I slopshot-release \
+            -n slopshot-release \
+            -s dist/SlopShot-arm64.zip.sha256.sig \
+            < dist/SlopShot-arm64.zip.sha256
           (
             cd dist
             shasum -a 256 -c SlopShot-arm64.zip.sha256
           )
-          work_dir="$(mktemp -d)"
-          trap 'rm -rf "$work_dir"' EXIT
           ditto -x -k dist/SlopShot-arm64.zip "$work_dir"
           app="$work_dir/SlopShot.app"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = "com.prashantbhudwal.slopshot"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "${{ steps.version.outputs.value }}"
+          cmp Resources/release-signing-key.pub "$app/Contents/Resources/release-signing-key.pub"
           lipo "$app/Contents/MacOS/SlopShot" -verify_arch arm64
           codesign --verify --deep --strict "$app"
 
@@ -56,6 +89,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             dist/SlopShot-arm64.zip \
             dist/SlopShot-arm64.zip.sha256 \
+            dist/SlopShot-arm64.zip.sha256.sig \
             install.sh \
             --title "SlopShot ${{ steps.version.outputs.value }}" \
             --generate-notes \

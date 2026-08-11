@@ -8,7 +8,10 @@ DIST_DIR="$PROJECT_DIR/dist"
 
 SLOPSHOT_VERSION="$VERSION" /bin/sh "$SCRIPT_DIR/build-app.sh" release
 /bin/mkdir -p "$DIST_DIR"
-/bin/rm -f -- "$DIST_DIR/SlopShot-arm64.zip" "$DIST_DIR/SlopShot-arm64.zip.sha256"
+/bin/rm -f -- \
+  "$DIST_DIR/SlopShot-arm64.zip" \
+  "$DIST_DIR/SlopShot-arm64.zip.sha256" \
+  "$DIST_DIR/SlopShot-arm64.zip.sha256.sig"
 DITTONORSRC=1 /usr/bin/ditto \
   -c \
   -k \

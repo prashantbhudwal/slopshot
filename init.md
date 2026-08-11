@@ -111,7 +111,7 @@ Preferences persist locally. PNG is the only image format in v1.
 
 Repository scripts will build the arm64 release executable, assemble the `.app` bundle and `Info.plist`, ad-hoc sign the bundle, run tests, and package the release archive. The bundle identifier is `com.prashantbhudwal.slopshot`.
 
-Prototype builds use an explicit stable designated requirement for that bundle identifier so rebuilding does not invalidate the existing Screen Recording grant. This deliberately weak local-development identity must be replaced by a Developer ID signature before public production distribution.
+Prototype builds use an explicit stable designated requirement for that bundle identifier so rebuilding does not invalidate the existing Screen Recording grant. Release archives are authenticated separately with a pinned Ed25519 release-signing key, so Developer ID signing and notarization can remain deferred without weakening update authenticity.
 
 ### Capture and file lifecycle
 
@@ -145,14 +145,15 @@ The source and releases live in the public GitHub repository `prashantbhudwal/sl
 
 - The app installs to `~/Applications/SlopShot.app`, avoiding administrator privileges.
 - Version tags trigger a GitHub Actions workflow that runs the verification suite, builds the arm64 app, validates the packaged bundle, and publishes the release assets.
-- Each release publishes `SlopShot-arm64.zip` and a corresponding SHA-256 checksum.
-- A shell installer downloads the release, verifies its checksum, validates the expected bundle identifier and arm64 architecture, installs it, applies ad-hoc signing if required, and explicitly removes the Gatekeeper quarantine attribute with `xattr`.
+- Each release publishes `SlopShot-arm64.zip`, a corresponding SHA-256 checksum, and an Ed25519/OpenSSH signature over that checksum manifest.
+- The release-signing private key is stored only as the `SLOPSHOT_RELEASE_SIGNING_KEY` GitHub Actions secret. Its public key is pinned in the app and installer.
+- A shell installer downloads the release, verifies the release signature and signed checksum, validates the expected bundle identifier and arm64 architecture, installs it, applies ad-hoc signing if required, and explicitly removes the Gatekeeper quarantine attribute with `xattr`.
 - The app performs no automatic or background update checks.
 - The user can choose **Check for Updates...**, which queries the public latest GitHub Release, compares versions, and offers an available update.
-- An accepted update is downloaded and checksum-verified, then staged outside the running bundle. A helper replaces the complete app bundle after SlopShot quits, preserves the previous bundle for rollback, and relaunches the app.
+- An accepted update is downloaded, release-signature-verified, checksum-verified, and checked against the offered release version before it is staged outside the running bundle. A helper replaces the complete app bundle after SlopShot quits, preserves the previous bundle for rollback, and relaunches the app.
 - Update failure must leave the currently installed version launchable.
 
-This ad-hoc signed, unnotarized flow is for prototype testing only. Production distribution will require a reassessment of signing, notarization, and update authenticity.
+This distribution remains ad-hoc signed and unnotarized. The independent pinned release signature authenticates updates without a paid Apple certificate; Developer ID signing and notarization may be added later for Gatekeeper and installation UX.
 
 ## Privacy and security principles
 
@@ -160,7 +161,7 @@ This ad-hoc signed, unnotarized flow is for prototype testing only. Production d
 - SlopShot has no account system, analytics, telemetry, advertising, or crash-upload service.
 - The only network operation is a user-initiated request to the public GitHub Releases API and the corresponding asset download.
 - Screen Recording is the only capture-related system permission expected in v1.
-- Update replacement is accepted only after validating the checksum, bundle identifier, architecture, and version.
+- Update replacement is accepted only after validating the release signature, signed checksum, bundle identifier, architecture, code integrity, and exact release version.
 
 ## Validation and acceptance criteria
 
@@ -175,7 +176,7 @@ Unit tests must cover:
 - PNG Description and XMP metadata round-tripping
 - Shared capture IDs and display indices for grouped captures
 - Semantic version comparison and release parsing
-- Archive checksum, bundle identifier, and architecture validation
+- Release-signature tamper rejection plus archive checksum, bundle identifier, version, and architecture validation
 - Atomic save and update rollback behavior
 
 Integration and manual tests must cover:

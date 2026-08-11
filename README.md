@@ -40,7 +40,7 @@ SlopShot requires Apple silicon and macOS 14 or later.
 curl -fsSL https://raw.githubusercontent.com/prashantbhudwal/slopshot/main/install.sh | sh
 ```
 
-The installer downloads the latest release, verifies its SHA-256 checksum, bundle identifier, arm64 executable, and code signature, then installs it at `~/Applications/SlopShot.app`. It keeps the previous app bundle beside the new one as a dated backup.
+The installer downloads the latest release and verifies an Ed25519 release signature using a public key pinned in the installer. It then verifies the signed SHA-256 checksum, bundle identifier, arm64 executable, and ad-hoc code signature before installing at `~/Applications/SlopShot.app`. It keeps the previous app bundle beside the new one as a dated backup.
 
 SlopShot is currently distributed as an ad-hoc signed prototype. macOS asks for Screen Recording access the first time it captures the screen. Chained shortcuts also need Accessibility access because SlopShot sends the recorded shortcut to another app.
 
@@ -77,7 +77,9 @@ swift run SlopShotCoreTests
 Build the signed arm64 archive and checksum with:
 
 ```sh
-./scripts/package-release.sh 0.1.0
+./scripts/package-release.sh 0.1.1
 ```
 
-Tagged versions matching `v*` run the release workflow and publish `SlopShot-arm64.zip`, its SHA-256 checksum, and the installer script.
+Tagged versions matching `v*` run the release workflow and publish `SlopShot-arm64.zip`, its SHA-256 checksum, the checksum's OpenSSH signature, and the installer script. The private Ed25519 key exists only in the `SLOPSHOT_RELEASE_SIGNING_KEY` GitHub Actions secret; the matching public key is bundled with the app and installer.
+
+SlopShot remains ad-hoc signed and unnotarized. Release signatures authenticate updates independently of Apple's paid Developer ID and notarization services, while the stable ad-hoc designated requirement preserves local Screen Recording permission across builds.
