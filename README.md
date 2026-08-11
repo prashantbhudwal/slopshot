@@ -6,6 +6,32 @@ Bug screenshots usually need an explanation. Keeping that explanation somewhere 
 
 SlopShot follows the native macOS screenshot interaction. It lives in the menu bar, saves captures to a chosen folder, and copies the finished image to the clipboard. A chained shortcut can focus the prompt and start your preferred dictation app after capture.
 
+## Screenshot and metadata
+
+![SlopShot screenshot with a prompt appended below the captured pixels](docs/assets/slopshot-prompt-example.png)
+
+The horizontal divider marks the end of the captured screen. Everything below it is the prompt footer added by SlopShot. The same prompt is embedded in the file:
+
+```text
+Description: This codex left sidebar is ugly AF. Restyle this later.
+slopshot:CaptureId: 4D0CA7E4-AB31-4B98-892B-A41A451D8A3E
+slopshot:SchemaVersion: 1
+slopshot:Prompt: This codex left sidebar is ugly AF. Restyle this later.
+slopshot:DisplayCount: 1
+slopshot:DisplayIndex: 1
+slopshot:VisualPromptEmbedded: true
+slopshot:CapturedAt: 2026-08-11T17:03:08.936Z
+```
+
+Finder's Get Info window does not show embedded PNG Description or custom XMP fields. Its Comments box is a separate Finder attribute. Read the embedded fields with ExifTool:
+
+```sh
+exiftool -G1 -a -s \
+  -Description \
+  -XMP-slopshot:all \
+  "Screenshot 2026-08-11 at 22.33.08.png"
+```
+
 ## Install
 
 SlopShot requires Apple silicon and macOS 14 or later.
