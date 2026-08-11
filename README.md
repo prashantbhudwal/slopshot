@@ -1,6 +1,6 @@
 # SlopShot
 
-A screenshotting app for yappers.
+A screenshotting app for Slop Coders 😬.
 
 Bug screenshots usually need an explanation. Keeping that explanation somewhere else means tracking two pieces of context and matching them again later. SlopShot keeps them together: write or dictate a prompt after capture, and the app adds it to the image and its metadata. The resulting PNG is ready to give to an agent as one file.
 
