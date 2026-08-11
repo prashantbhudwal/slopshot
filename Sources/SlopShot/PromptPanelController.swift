@@ -318,6 +318,9 @@ private final class DraggableImageView: NSView, NSDraggingSource {
   private var isDraggingFiles = false
 
   override var isOpaque: Bool { false }
+  override var acceptsFirstResponder: Bool { false }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
   override func draw(_ dirtyRect: NSRect) {
     image?.draw(
@@ -331,6 +334,7 @@ private final class DraggableImageView: NSView, NSDraggingSource {
   }
 
   override func mouseDown(with event: NSEvent) {
+    window?.makeFirstResponder(nil)
     isDraggingFiles = false
   }
 
